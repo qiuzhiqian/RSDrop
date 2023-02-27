@@ -5,10 +5,11 @@ use serde::{Serialize, Deserialize};
 use tokio::net::UdpSocket;
 use tokio::io::{AsyncWrite,AsyncRead};
 use std::io;
-use std::sync::Arc;
 use std::process;
 
 use std::net::Ipv4Addr;
+
+use std::sync::{Arc,Mutex};
 
 #[derive(Clone,Debug, Serialize, Deserialize)]
 struct Device {
@@ -94,7 +95,7 @@ async fn main() -> std::io::Result<()> {
 struct Server {
     udp_socket: Arc<UdpSocket>,
     host: Device,
-    discoveryed: Vec<Device>,
+    discoveryed: Arc<Mutex<Vec<Device>>>,
 }
 
 impl Server {
@@ -106,7 +107,7 @@ impl Server {
         Ok(Server{
             udp_socket: Arc::new(socket),
             host: Device::default(),
-            discoveryed: Vec::new(),
+            discoveryed: Arc::new(Mutex::new(Vec::new())),
         })
     }
     async fn send_discovery(&self,addr:&str) -> std::io::Result<()>{
@@ -121,6 +122,7 @@ impl Server {
     async fn listen_device(&self) -> io::Result<()>{
         let send_socket = self.udp_socket.clone();
         let host_device = self.host.clone();
+        let child_devices = self.discoveryed.clone();
         tokio::spawn(async move {
             let mut buf = Vec::<u8>::new();
             let local_addr = send_socket.local_addr().unwrap();
@@ -131,8 +133,16 @@ impl Server {
                 let (lens, addr) = send_socket.recv_from(&mut data).await.expect("disconnect.");
                 println!("lens {},addr: {}",lens,addr);
                 if let Ok(discovery) = serde_json::from_slice::<DiscoveryReq>(&data[..lens]){
+                    if host_device.id != discovery.device.id {
+                        continue;
+                    }
                     println!("discovery {:#?}",discovery);
-                    if discovery.ack && host_device.id != discovery.device.id {
+                    {
+                        let mut devices = child_devices.lock().unwrap();
+                        devices.push(discovery.device);
+                    }
+                    // for ack
+                    if discovery.ack {
                         let discovery_resp = DiscoveryReq::new(&host_device, false);
                         let data = serde_json::to_string(&discovery_resp).unwrap();
                         send_socket.send_to(data.as_bytes(), format!("{}:{}",addr.ip(),UDP_PORT)).await.unwrap();
