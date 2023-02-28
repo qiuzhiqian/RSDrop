@@ -11,6 +11,8 @@ use std::net::Ipv4Addr;
 
 use std::sync::{Arc,Mutex};
 
+use std::time::{SystemTime,UNIX_EPOCH};
+
 #[derive(Clone,Debug, Serialize, Deserialize)]
 struct Device {
     name: String,
@@ -21,16 +23,20 @@ struct Device {
 impl Device {
     fn default() -> Self {
         let id = process::id();
+    let start = SystemTime::now();
+    let since_the_epoch = start.duration_since(UNIX_EPOCH)
+        .expect("Time went backwards");
+
         Device{
-            name: "xml-pc".to_string(),
-            r#type: "Linux".to_string(),
-            id: format!("sdfasdfjlsga-{}",id),
+            name: hostname(),
+            r#type: device_type(),
+            id: format!("simp_drop://{}/{}",since_the_epoch.as_micros(),id),
         }
     }
 }
 
 const VERSION: u32 = 1u32;
-const MULTICAST_IP: Ipv4Addr = Ipv4Addr::new(234, 2, 2, 2);
+const MULTICAST_IP: Ipv4Addr = Ipv4Addr::new(224, 0, 0, 123);
 const UDP_PORT:u16 = 52637u16;
 const TCP_PORT: u16 = 52638u16;
 
@@ -62,7 +68,7 @@ async fn main() -> std::io::Result<()> {
                     println!("ip:{} boardcast: {}", ip.ip().to_string(),ip.broadcast().to_string());
                     let server = Server::new(&ip.ip().to_string()).await.unwrap();
                     server.listen_device().await?;
-                    server.send_discovery("234.2.2.2").await.unwrap();
+                    server.send_discovery(&MULTICAST_IP.to_string()).await.unwrap();
                     servers.push(server);
                 }
             }
@@ -87,6 +93,10 @@ async fn main() -> std::io::Result<()> {
             }
         } else if params[0].to_lowercase() == "dump" {
             println!("servers: {:#?}",&servers);
+        } else if params[0].to_lowercase() == "send" {
+            for server in &servers {
+                server.send_file(params[1]).await?;
+            }
         }
     }
 }
@@ -103,6 +113,7 @@ impl Server {
         let socket = UdpSocket::bind(format!("{}:{}",ip ,UDP_PORT)).await?;
         let inter = Ipv4Addr::new(0,0,0,0);
         socket.join_multicast_v4(MULTICAST_IP,inter).expect("join failed");
+        socket.set_multicast_ttl_v4(50)?;
 
         Ok(Server{
             udp_socket: Arc::new(socket),
@@ -133,7 +144,7 @@ impl Server {
                 let (lens, addr) = send_socket.recv_from(&mut data).await.expect("disconnect.");
                 println!("lens {},addr: {}",lens,addr);
                 if let Ok(discovery) = serde_json::from_slice::<DiscoveryReq>(&data[..lens]){
-                    if host_device.id != discovery.device.id {
+                    if host_device.id == discovery.device.id {
                         continue;
                     }
                     println!("discovery {:#?}",discovery);
@@ -149,6 +160,7 @@ impl Server {
                         buf.clear();
                     }
                 } else {
+                    println!("data: {}",String::from_utf8(data[..lens].to_vec()).expect("failed"));
                     buf.append(&mut data[..lens].to_vec())
                 }
                 println!("handle end.");
@@ -156,5 +168,41 @@ impl Server {
             
         });
         Ok(())
+    }
+
+    async fn send_file(&self,id: &str,file: std::path::PathBuf) -> io::Result<()> {
+        let dev = self.discoveryed.lock().unwrap();
+        for device in  dev.iter() {
+            if device.id == id {
+                println!("find device {:#?}",device);
+            }
+        }
+        Ok(())
+    }
+}
+
+fn hostname() -> String {
+    // Linux
+    let data = std::fs::read_to_string("/etc/hostname").unwrap();
+    let hostname = data.trim_end().to_string();
+    if let Ok(user) = std::env::var("USER") {
+        return format!("{}@{}",user,hostname);
+    }
+    hostname
+}
+
+fn device_type() -> String {
+    if cfg!(target_os = "windows") {
+        return "windows".to_string();
+    } else if cfg!(target_os = "linux") {
+        return "linux".to_string();
+    } else if cfg!(target_os = "macos") {
+        return "macos".to_string();
+    } else if cfg!(target_os = "ios") {
+        return "ios".to_string();
+    } else if cfg!(target_os = "android") {
+        return "android".to_string();
+    } else {
+        return "unknow".to_string();
     }
 }
