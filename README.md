@@ -3,7 +3,7 @@
 sender:
 {
     device:{
-        "name":"QT-UDP-HTY",
+        "name":"XML-XIAMENGLIANG",
         "type":"Deepin",
         "id":
     },
@@ -14,7 +14,7 @@ sender:
 receiver:
 {
     device:{
-        "name":"QT-UDP-HTY",
+        "name":"XML-XIAMENGLIANG",
         "type":"Deepin",
         "id":
     },
@@ -25,38 +25,36 @@ receiver:
 # send
 ## handshake
 
-HANDSHAKE1
-sender:
-socket->write(crypto.localPublicKey());
-
-receiver:
-socket->write(crypto.localPublicKey());
-
-HANDSHAKE2,
+### public key
 sender:
 {
-    "device":{
-        "name"
-        "device_type"
-        "id":
-    }
+    "type": "rsa"
+    "data": xxxxxxxxxx
+}
+
+receiver:
+{
+    "type": "rsa"
+    "data": xxxxxxxxxx
+}
+
+### File Meta data
+sender:
+{
     "files":[
         {
-            "filename":
+            "filename":"example.txt"
             "size":
             "verity": {
-                "type":
-                "data"
+                "type":"md5"
+                "data":"xxxxxxx"
             }
         }
     ]
 }
 
 receiver:
-{
-    "response"
-}
-TRANSFERRING,
+ack u8(1)
+
 sender:
-[data] ->
-FINISHED
+all files raw data

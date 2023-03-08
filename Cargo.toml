@@ -10,4 +10,9 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 tokio = { version = "1", features = ["full"] }
 pnet = "0.33.0"
-syscalls = "0.6.7"
+rsa = "0.8.1"
+rand = "0.8.5"
+base64ct = "1.6.0"
+md-5 = "0.10.5"
+log = "0.4"
+env_logger = "0.10.0"
