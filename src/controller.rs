@@ -2,19 +2,13 @@ mod accepter;
 mod connector;
 mod discoverer;
 
-use tokio::net::{UdpSocket,TcpListener,TcpStream};
-use tokio::io::{self, AsyncRead, AsyncWrite, AsyncReadExt,AsyncWriteExt};
+use tokio::io;
 
 use rsa::{RsaPrivateKey, RsaPublicKey};
-use rsa::pkcs8::{EncodePublicKey,DecodePublicKey};
 
-use std::net::{Ipv4Addr, SocketAddr};
+use std::net::SocketAddr;
 
-use log::{debug, error, log_enabled, info, Level};
-
-use std::sync::{Arc,Mutex};
-
-use std::io::Write;
+use log::{debug, info};
 
 use connector::ClientConnector;
 use crate::device::{self, Device};

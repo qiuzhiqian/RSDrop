@@ -1,13 +1,11 @@
-use pnet::packet::ip::IpNextHeaderProtocols::Mux;
-use tokio::net::{UdpSocket,TcpListener,TcpStream};
+use tokio::net::UdpSocket;
 use tokio::io;
 use serde::{Serialize, Deserialize};
 use std::sync::{Arc,Mutex};
-use log::{debug, error, log_enabled, info, Level};
-use std::net::{IpAddr, SocketAddr, Ipv4Addr};
+use log::{debug, info};
+use std::net::{SocketAddr, Ipv4Addr};
 
 use crate::device::{Device,RemoteTcpDevice};
-use crate::file_meta::FileMeta;
 use super::accepter;
 
 const VERSION: u32 = 1u32;
