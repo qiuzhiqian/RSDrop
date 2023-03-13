@@ -9,7 +9,7 @@ use crate::key_object::KeyObject;
 use crate::file_meta::{FileMeta,MetaList};
 use std::io::Read;
 
-const TCP_CONNECTOR_PORT: u16 = 52638u16;
+//const TCP_CONNECTOR_PORT: u16 = 52638u16;
 
 pub struct ClientConnector {
     pub tcp_connector: TcpStream,
