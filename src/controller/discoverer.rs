@@ -44,7 +44,10 @@ impl Discovery {
         socket.join_multicast_v4(MULTICAST_IP,inter).expect("join failed");
         socket.set_multicast_ttl_v4(50)?;
         socket.set_multicast_loop_v4(false)?;
-        Ok(Self{socket: Arc::new(socket),discoveryed: Arc::new(Mutex::new(Vec::<RemoteTcpDevice>::new()))})
+        Ok(Self{
+            socket: Arc::new(socket),
+            discoveryed: Arc::new(Mutex::new(Vec::<RemoteTcpDevice>::new())),
+        })
     }
 
     pub async fn send_discovery(&self,addr:&str,dev: &Device) -> std::io::Result<()> {
@@ -56,7 +59,7 @@ impl Discovery {
         Ok(())
     }
 
-    pub async fn start(&self,dev: &Device) -> io::Result<()> {
+    pub async fn start(&self,dev: &Device,tx: tokio::sync::mpsc::Sender<crate::device::RemoteTcpDevice>) -> io::Result<()> {
         let send_socket = self.socket.clone();
         let host_device = dev.clone();
         let child_devices = self.discoveryed.clone();
@@ -70,15 +73,21 @@ impl Discovery {
                 buf.append(&mut data[..lens].to_vec());
                 if let Ok(discovery) = serde_json::from_slice::<DiscoveryReq>(&buf){
                     buf.clear();
-                    if host_device.id == discovery.device.id {
+                    if host_device.id == discovery.device.id.clone() {
                         continue;
                     }
+
+                    let discover_device_id = discovery.device.id.clone();
                     
                     {
                         let mut devices = child_devices.lock().unwrap();
 
-                        devices.push(RemoteTcpDevice { addr: SocketAddr::new(addr.ip(), discovery.port), device: discovery.device });
+                        devices.push(RemoteTcpDevice { addr: SocketAddr::new(addr.ip(), discovery.port), device: discovery.device.clone() });
                     }
+                    debug!("send for notify");
+                    let remote_device = RemoteTcpDevice { addr: SocketAddr::new(addr.ip(), discovery.port), device: discovery.device };
+                    tx.send(remote_device).await.expect("send failed");
+                    
                     // for ack
                     if discovery.ack {
                         let discovery_resp = DiscoveryReq::new(&host_device, accepter::TCP_ACCEPTER_PORT , false);

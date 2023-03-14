@@ -11,7 +11,10 @@ use std::net::SocketAddr;
 use log::{debug, info};
 
 use connector::ClientConnector;
-use crate::device::{self, Device};
+use crate::device::{self, Device, RemoteTcpDevice};
+use std::sync::{Arc,Mutex};
+
+use eframe::egui;
 
 pub struct Controller {
     discoverers: Vec<discoverer::Discovery>,
@@ -19,10 +22,12 @@ pub struct Controller {
     private_key: RsaPrivateKey,
     public_key: RsaPublicKey,
     host: device::Device,
+    devices: Arc<Mutex<Vec<RemoteTcpDevice>>>,
+    ctx: egui::Context,
 }
 
 impl Controller {
-    pub fn new() -> Self {
+    pub fn new(ctx: egui::Context) -> Self {
         let mut rng = rand::thread_rng();
         let private_key = RsaPrivateKey::new(&mut rng, 2048).expect("failed to generate a key");
         let public_key = RsaPublicKey::from(&private_key);
@@ -32,9 +37,16 @@ impl Controller {
             discoverers: Vec::new(),
             accepters: Vec::new(),
             host: Device::default(),
+            devices: Arc::new(Mutex::new(Vec::<RemoteTcpDevice>::new())),
+            ctx,
         }
     }
-    pub async fn start_discovery_service(&mut self) -> io::Result<()> {
+
+    pub fn set_device_container(&mut self,devices: Arc<Mutex<Vec<RemoteTcpDevice>>>) {
+        self.devices = devices;
+    }
+
+    pub async fn start_discovery_service(&mut self) -> io::Result<tokio::sync::mpsc::Receiver<device::RemoteTcpDevice>> {
         for interface in pnet::datalink::interfaces() {
             if interface.is_up() && !interface.ips.is_empty() && !interface.is_loopback() && !interface.name.contains("docker") {
                 for ip in interface.ips {
@@ -49,10 +61,11 @@ impl Controller {
             }
         }
 
+        let (tx, mut rx) = tokio::sync::mpsc::channel(32);
         for disc in &self.discoverers {
-            disc.start(&self.host).await?;
+            disc.start(&self.host,tx.clone()).await?;
         }
-        Ok(())
+        Ok(rx)
     }
 
     pub async fn start_service(&mut self) -> io::Result<()> {
@@ -80,10 +93,12 @@ impl Controller {
     pub async fn cmd_loop(&self) -> io::Result<()> {
         info!("run cmd loop");
         loop{
-            let mut buffer = String::new();
-            let stdin = std::io::stdin();
-            stdin.read_line(&mut buffer)?;
-            let params: Vec<&str> = buffer.split_ascii_whitespace().collect();
+            let line = tokio::task::spawn_blocking(move || {
+                let mut line = String::new();
+                std::io::stdin().read_line(&mut line).unwrap();
+                line
+            }).await.unwrap();
+            let params: Vec<&str> = line.split_ascii_whitespace().collect();
             debug!("param: {:#?}",params);
             if params.is_empty() {
                 continue;
@@ -115,6 +130,21 @@ impl Controller {
         }
     }
 
+    pub async fn sync_device_loop(&self,mut rx: tokio::sync::mpsc::Receiver<device::RemoteTcpDevice>) -> io::Result<()> {
+        loop {
+            debug!("wait for recv...");
+            if let Some(device) = rx.recv().await {
+                debug!("receive device {:#?}",device);
+                let mut devices = self.devices.lock().unwrap();
+                devices.push(device);
+                self.ctx.request_repaint();
+            } else {
+                break;
+            }
+        }
+        Ok(())
+    }
+
     async fn send_files(&self, addr: SocketAddr,files: &Vec<std::path::PathBuf>) -> io::Result<()> {
         debug!("send file {:?} to {}", files,addr);
         let mut conn = ClientConnector::connect(addr).await?;
@@ -129,8 +159,22 @@ impl Controller {
             if let Some(addr) = disc.get_remote_device_addr(id) {
                 return Some(addr);
             }
-            
         }
         return None;
     }
+}
+
+pub fn add() {
+
+}
+
+pub async fn send(key: &RsaPublicKey,addr: SocketAddr,files: &Vec<std::path::PathBuf>) -> io::Result<()> {
+    let mut conn = ClientConnector::connect(addr).await?;
+        conn.send_public_key(&key).await?;
+        conn.send_files(files).await?;
+        Ok(())
+}
+
+pub fn cancel() {
+
 }
