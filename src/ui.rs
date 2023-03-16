@@ -10,6 +10,7 @@ struct MyApp {
     discovery_ip: String,
     devices:  Arc<Mutex<Vec<RemoteTcpDevice>>>,
     backend_run: bool,
+    cts: Option<tokio::sync::mpsc::Sender<String>>
 }
 
 impl Default for MyApp {
@@ -18,6 +19,7 @@ impl Default for MyApp {
             discovery_ip: "".to_string(),
             devices: Arc::new(Mutex::new(Vec::<RemoteTcpDevice>::new())),
             backend_run: false,
+            cts: None,
         }
     }
 }
@@ -28,11 +30,16 @@ impl eframe::App for MyApp {
             if !self.backend_run {
                 let devices = self.devices.clone();
                 // start backend
-                start_backend(ctx.clone(),devices).expect("backend run failed");
+                let cts = start_backend(ctx.clone(),devices).expect("backend run failed");
+                self.cts = Some(cts);
                 self.backend_run = true;
             }
             ui.add(egui::TextEdit::singleline(&mut self.discovery_ip).hint_text("192.168.1.100"));
             if ui.button("add").on_hover_text("add a device").clicked() {
+                let sender = self.cts.clone().unwrap();
+                let ip = self.discovery_ip.clone();
+                let mut rt = tokio::runtime::Runtime::new().unwrap();
+                rt.block_on(async move {sender.send(ip).await.expect("send failed");});
                 debug!("abc");
             }
 
@@ -83,29 +90,14 @@ pub fn start() -> std::io::Result<()> {
     Ok(())
 }
 
-fn start_backend(ctx: egui::Context,devices: Arc<Mutex<Vec<RemoteTcpDevice>>>) -> std::io::Result<()> {
+fn start_backend(ctx: egui::Context,devices: Arc<Mutex<Vec<RemoteTcpDevice>>>) -> std::io::Result<(tokio::sync::mpsc::Sender<String>)> {
+    let mut controller = controller::Controller::new(ctx);
+    controller.set_device_container(devices);
+    let (ctx,crx) = controller.gen_ctx();
     std::thread::spawn(move ||{
-        let runtime = tokio::runtime::Runtime::new().unwrap();
-        if let Err(e) = runtime.block_on(async move{
-            let mut controller = controller::Controller::new(ctx);
-            controller.set_device_container(devices);
-            let rx = controller.start_discovery_service().await?;
-            controller.start_service().await?;
-            let res: tokio::io::Result<()> = tokio::select!{
-                _ = controller.cmd_loop() => {
-                    debug!("cmd loop end");
-                    Ok(())
-                }
-                _ = controller.sync_device_loop(rx) => {
-                    debug!("sync device loop end");
-                    Ok(())
-                }
-            };
-            res
-        }) {
-            info!("runtime err: {}",e);
-        }
+        let mut rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(async move {controller.start_loop().await.expect("abc");});
     });
     
-    Ok(())
+    Ok(ctx)
 }

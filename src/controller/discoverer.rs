@@ -2,6 +2,7 @@ use tokio::net::UdpSocket;
 use tokio::io;
 use serde::{Serialize, Deserialize};
 use std::sync::{Arc,Mutex};
+use tokio::io::{ AsyncReadExt, AsyncWriteExt, AsyncRead, AsyncWrite};
 use log::{debug, info};
 use std::net::{SocketAddr, Ipv4Addr};
 
@@ -31,10 +32,9 @@ impl DiscoveryReq {
 }
 
 /// discovery other devices by udp multicast 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct Discovery {
-    pub socket : Arc<UdpSocket>,
-    pub discoveryed: Arc<Mutex<Vec<RemoteTcpDevice>>>,
+    socket : Arc<UdpSocket>,
 }
 
 impl Discovery {
@@ -44,73 +44,78 @@ impl Discovery {
         socket.join_multicast_v4(MULTICAST_IP,inter).expect("join failed");
         socket.set_multicast_ttl_v4(50)?;
         socket.set_multicast_loop_v4(false)?;
-        Ok(Self{
-            socket: Arc::new(socket),
-            discoveryed: Arc::new(Mutex::new(Vec::<RemoteTcpDevice>::new())),
-        })
+        Ok(Self{socket: Arc::new(socket),})
     }
 
-    pub async fn send_discovery(&self,addr:&str,dev: &Device) -> std::io::Result<()> {
-        let discovery_req = DiscoveryReq::new(dev, accepter::TCP_ACCEPTER_PORT, true);
-        let data = serde_json::to_string(&discovery_req)?;
-        debug!("send discovery request to {}:{}",addr,UDP_PORT);
-        self.socket.send_to(data.as_bytes(), format!("{}:{}",addr,UDP_PORT)).await?;
-        debug!("send end...");
-        Ok(())
-    }
-
-    pub async fn start(&self,dev: &Device,tx: tokio::sync::mpsc::Sender<crate::device::RemoteTcpDevice>) -> io::Result<()> {
-        let send_socket = self.socket.clone();
-        let host_device = dev.clone();
-        let child_devices = self.discoveryed.clone();
+    pub async fn start(&self, dev: &Device,tx: tokio::sync::mpsc::Sender<crate::device::RemoteTcpDevice>) -> io::Result<tokio::sync::mpsc::Sender<String>> {
+        send_discovery(&self.socket,&MULTICAST_IP.to_string(), &dev).await?;
+        
+        let (add_tx,rx) = tokio::sync::mpsc::channel(20);
+        // recv
+        // add
+        let recv_socket = self.socket.clone();
+        let service_socket = self.socket.clone();
+        let recv_device = dev.clone();
+        let service_dev = dev.clone();
         tokio::spawn(async move {
-            let mut buf = Vec::<u8>::new();
-            let local_addr = send_socket.local_addr().unwrap();
-            info!("local addr: {}",local_addr);
-            loop {
-                let mut data = [0; 1024];
-                let (lens, addr) = send_socket.recv_from(&mut data).await.expect("disconnect.");
-                buf.append(&mut data[..lens].to_vec());
-                if let Ok(discovery) = serde_json::from_slice::<DiscoveryReq>(&buf){
-                    buf.clear();
-                    if host_device.id == discovery.device.id.clone() {
-                        continue;
-                    }
-
-                    let discover_device_id = discovery.device.id.clone();
-                    
-                    {
-                        let mut devices = child_devices.lock().unwrap();
-
-                        devices.push(RemoteTcpDevice { addr: SocketAddr::new(addr.ip(), discovery.port), device: discovery.device.clone() });
-                    }
-                    debug!("send for notify");
-                    let remote_device = RemoteTcpDevice { addr: SocketAddr::new(addr.ip(), discovery.port), device: discovery.device };
-                    tx.send(remote_device).await.expect("send failed");
-                    
-                    // for ack
-                    if discovery.ack {
-                        let discovery_resp = DiscoveryReq::new(&host_device, accepter::TCP_ACCEPTER_PORT , false);
-                        let data = serde_json::to_string(&discovery_resp).unwrap();
-                        send_socket.send_to(data.as_bytes(), format!("{}:{}",addr.ip(),UDP_PORT)).await.unwrap();
-                    }
-                }
-                debug!("one device has discoveryed.");
-            }
-            
+            service(service_socket,&service_dev,tx).await.expect("abc");
+        });
+        tokio::spawn(async move {
+            receive_handle(recv_socket,&recv_device,rx).await.expect("abc");
         });
 
-        self.send_discovery(&MULTICAST_IP.to_string(), &dev).await
-    }
-
-    pub fn get_remote_device_addr(&self,id: &str) -> Option<SocketAddr> {
-        let mut devs = self.discoveryed.lock().unwrap();
-        debug!("id {}",id);
-        for dev in devs.iter_mut() {
-            if dev.device.id == id {
-                return Some(dev.addr);
-            }
-        }
-        return None;
+        Ok(add_tx)
     }
 }
+
+async fn service(socket: Arc<tokio::net::UdpSocket>, dev: &Device, tx: tokio::sync::mpsc::Sender<crate::device::RemoteTcpDevice>) -> io::Result<()> {
+    let mut buf = Vec::<u8>::new();
+    let local_addr = socket.local_addr().unwrap();
+    info!("local addr: {}",local_addr);
+    let host_device = dev.clone();
+    loop {
+        let mut data = [0; 1024];
+        let (lens, addr) = socket.recv_from(&mut data).await.expect("disconnect.");
+        buf.append(&mut data[..lens].to_vec());
+        if let Ok(discovery) = serde_json::from_slice::<DiscoveryReq>(&buf){
+            buf.clear();
+            if host_device.id == discovery.device.id.clone() {
+                continue;
+            }
+
+            debug!("send for notify");
+            let remote_device = RemoteTcpDevice { addr: SocketAddr::new(addr.ip(), discovery.port), device: discovery.device };
+            tx.send(remote_device).await.expect("send failed");
+            
+            // for ack
+            if discovery.ack {
+                let discovery_resp = DiscoveryReq::new(&host_device, accepter::TCP_ACCEPTER_PORT , false);
+                let data = serde_json::to_string(&discovery_resp).unwrap();
+                socket.send_to(data.as_bytes(), format!("{}:{}",addr.ip(),UDP_PORT)).await.unwrap();
+            }
+        }
+        debug!("one device has discoveryed.");
+    }
+}
+
+async fn receive_handle(socket: Arc<tokio::net::UdpSocket>, dev: &Device,mut rx: tokio::sync::mpsc::Receiver<String>) -> io::Result<()> {
+    let host_device = dev.clone();
+    loop{
+        if let Some(ip) = rx.recv().await {
+            debug!("do add device: {}", ip);
+            //do add device
+            send_discovery(&socket,&ip,&host_device).await?;
+        }
+    }
+}
+
+async fn send_discovery(socket: &Arc<tokio::net::UdpSocket>,addr:&str,dev: &Device) -> std::io::Result<()> {
+    let discovery_req = DiscoveryReq::new(dev, accepter::TCP_ACCEPTER_PORT, true);
+    let data = serde_json::to_string(&discovery_req)?;
+    debug!("send discovery request to {}:{}",addr,UDP_PORT);
+    socket.send_to(data.as_bytes(), format!("{}:{}",addr,UDP_PORT)).await?;
+    //stream.write(src)
+    debug!("send end...");
+    Ok(())
+}
+
